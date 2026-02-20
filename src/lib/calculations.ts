@@ -5,7 +5,7 @@ import type {
   AdjustmentPayload, DateFilter, LoanSection, PaymentMode,
 } from './types';
 
-function isOnboardingPayment(event: FinanceEvent): boolean {
+export function isOnboardingPayment(event: FinanceEvent): boolean {
   if (event.eventType !== 'INSTALLMENT_PAYMENT') return false;
   const p = event.payload as InstallmentPaymentPayload;
   return p.isOnboarding === true;
@@ -139,6 +139,55 @@ export function getCustomerLoanSummary(customer: Customer, events: FinanceEvent[
   return { customer, activeLoanEventId: activeLoan.eventId, loanType: activeLoan.eventType === 'RENEW_LOAN' ? 'RENEWED' : 'NEW', loanAmount: p.loanAmount, totalPayable: p.totalPayable, totalInstallments: p.totalInstallments, installmentsPaid, amountPaid, remainingAmount, remainingInstallments, isFullyPaid, paidToday, hasLoan: true };
 }
 
+export function getCustomerLoanSections(customer: Customer, events: FinanceEvent[]): LoanSection[] {
+  const customerEvents = events.filter((e: FinanceEvent) => {
+    const p = e.payload as any;
+    return p.customerId === customer.id;
+  });
+
+  const loanEvents = customerEvents
+    .filter(e => e.eventType === 'NEW_LOAN' || e.eventType === 'RENEW_LOAN')
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // newest first
+
+  return loanEvents.map((loanEvent, index) => {
+    const p = loanEvent.payload as NewLoanPayload | RenewLoanPayload;
+    const payments = customerEvents
+      .filter(e => e.eventType === 'INSTALLMENT_PAYMENT' && (e.payload as InstallmentPaymentPayload).loanEventId === loanEvent.eventId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    let amountPaid = 0;
+    for (const payment of payments) {
+      amountPaid += (payment.payload as InstallmentPaymentPayload).totalAmount;
+    }
+
+    const remainingAmount = Math.max(0, p.totalPayable - amountPaid);
+    const isActive = index === 0;
+    const isClosed = remainingAmount <= 0;
+
+    // Find closed date: if fully paid, use date of last payment
+    let closedDate: string | undefined;
+    if (isClosed && payments.length > 0) {
+      closedDate = payments[0].createdAt; // payments sorted newest first, so [0] is latest
+    }
+
+    return {
+      loanEvent,
+      loanType: loanEvent.eventType === 'RENEW_LOAN' ? 'RENEWED' as const : 'NEW' as const,
+      loanAmount: p.loanAmount,
+      totalPayable: p.totalPayable,
+      totalInstallments: p.totalInstallments,
+      payments,
+      amountPaid,
+      remainingAmount,
+      installmentsPaid: payments.length,
+      isActive,
+      isClosed,
+      startDate: loanEvent.createdAt,
+      closedDate,
+    };
+  });
+}
+
 export function formatCurrency(amount: number): string {
   return '₹' + amount.toLocaleString('en-IN', { maximumFractionDigits: 0 });
 }
@@ -191,4 +240,20 @@ export function getPaymentMode(event: FinanceEvent): PaymentMode {
   if (p.onlineAmount > 0 && p.offlineAmount > 0) return 'mixed';
   if (p.onlineAmount > 0) return 'online';
   return 'cash';
+}
+
+export function getPaymentModeColor(mode: PaymentMode): string {
+  switch (mode) {
+    case 'cash': return '#EAB308';    // yellow
+    case 'online': return '#3B82F6';  // blue
+    case 'mixed': return '#8B5CF6';   // purple
+  }
+}
+
+export function getPaymentModeLabel(mode: PaymentMode): string {
+  switch (mode) {
+    case 'cash': return 'Cash';
+    case 'online': return 'Online';
+    case 'mixed': return 'Mixed';
+  }
 }
