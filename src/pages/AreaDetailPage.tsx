@@ -1,9 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MinusCircle, PlusCircle, Edit3, Smartphone, Search, X, MapPin, Home, CheckCircle, Clock, Plus } from 'lucide-react';
+import { ArrowLeft, MinusCircle, PlusCircle, Edit3, Smartphone, Search, X, MapPin, Home, CheckCircle, Clock, Plus, CalendarIcon, ChevronDown } from 'lucide-react';
 import { useApp } from '@/lib/context';
-import { formatCurrency, formatDateTime, getEventLabel, getEventColor, getCustomerLoanSummary } from '@/lib/calculations';
-import type { FinanceEvent, CustomerLoanSummary, Village, NewLoanPayload, RenewLoanPayload, InstallmentPaymentPayload, ExpensePayload, CapitalAddedPayload, AdjustmentPayload, OnboardingBalancePayload } from '@/lib/types';
+import { formatCurrency, formatDateTime, getEventLabel, getEventColor, getCustomerLoanSummary, isOnboardingPayment, filterEventsByDate, getPaymentMode, getPaymentModeColor, formatDate } from '@/lib/calculations';
+import type { FinanceEvent, CustomerLoanSummary, Village, NewLoanPayload, RenewLoanPayload, InstallmentPaymentPayload, ExpensePayload, CapitalAddedPayload, AdjustmentPayload, OnboardingBalancePayload, DateFilter, DateFilterMode, PaymentMode } from '@/lib/types';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar } from '@/components/ui/calendar';
+import { cn } from '@/lib/utils';
+import { format } from 'date-fns';
 
 type TabKey = 'dashboard' | 'customers' | 'history';
 
@@ -28,6 +32,111 @@ function TabBar({ active, onSelect }: { active: TabKey; onSelect: (t: TabKey) =>
   );
 }
 
+// Date Filter Component
+function DateFilterSelector() {
+  const { dateFilter, setDateFilter } = useApp();
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [calendarMode, setCalendarMode] = useState<'custom' | 'rangeStart' | 'rangeEnd'>('custom');
+  const [rangeStart, setRangeStart] = useState<Date | undefined>();
+
+  const dateOptions: { key: DateFilterMode; label: string }[] = [
+    { key: 'today', label: 'Today' },
+    { key: 'yesterday', label: 'Yesterday' },
+    { key: 'custom', label: 'Custom' },
+    { key: 'range', label: 'Range' },
+    { key: 'all', label: 'All' },
+  ];
+
+  const getLabel = () => {
+    switch (dateFilter.mode) {
+      case 'today': return 'Today';
+      case 'yesterday': return 'Yesterday';
+      case 'custom': return dateFilter.customDate ? format(new Date(dateFilter.customDate), 'dd MMM') : 'Custom';
+      case 'range': return dateFilter.startDate && dateFilter.endDate
+        ? `${format(new Date(dateFilter.startDate), 'dd MMM')} - ${format(new Date(dateFilter.endDate), 'dd MMM')}`
+        : 'Range';
+      case 'all': return 'All Time';
+    }
+  };
+
+  const handleSelect = (mode: DateFilterMode) => {
+    if (mode === 'today' || mode === 'yesterday' || mode === 'all') {
+      setDateFilter({ mode });
+      setShowCalendar(false);
+    } else if (mode === 'custom') {
+      setCalendarMode('custom');
+      setShowCalendar(true);
+    } else if (mode === 'range') {
+      setCalendarMode('rangeStart');
+      setRangeStart(undefined);
+      setShowCalendar(true);
+    }
+  };
+
+  const handleDatePick = (date: Date | undefined) => {
+    if (!date) return;
+    if (calendarMode === 'custom') {
+      setDateFilter({ mode: 'custom', customDate: date.toISOString() });
+      setShowCalendar(false);
+    } else if (calendarMode === 'rangeStart') {
+      setRangeStart(date);
+      setCalendarMode('rangeEnd');
+    } else if (calendarMode === 'rangeEnd' && rangeStart) {
+      const s = rangeStart < date ? rangeStart : date;
+      const e = rangeStart < date ? date : rangeStart;
+      setDateFilter({ mode: 'range', startDate: s.toISOString(), endDate: e.toISOString() });
+      setShowCalendar(false);
+    }
+  };
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button className="flex items-center gap-1.5 bg-card border border-border rounded-lg px-3 py-1.5 text-xs font-medium text-foreground hover:opacity-80">
+          <CalendarIcon size={14} className="text-primary" />
+          {getLabel()}
+          <ChevronDown size={12} className="text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-0" align="end">
+        {!showCalendar ? (
+          <div className="p-2 space-y-0.5">
+            {dateOptions.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => handleSelect(opt.key)}
+                className={cn(
+                  "w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors",
+                  dateFilter.mode === opt.key ? "bg-primary text-primary-foreground" : "hover:bg-accent text-foreground"
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div>
+            <div className="px-3 pt-2 pb-1">
+              <p className="text-xs font-medium text-muted-foreground">
+                {calendarMode === 'custom' ? 'Pick a date' : calendarMode === 'rangeStart' ? 'Pick start date' : 'Pick end date'}
+              </p>
+            </div>
+            <Calendar
+              mode="single"
+              selected={undefined}
+              onSelect={handleDatePick}
+              className={cn("p-3 pointer-events-auto")}
+            />
+            <div className="px-3 pb-2">
+              <button onClick={() => setShowCalendar(false)} className="text-xs text-muted-foreground hover:text-foreground">← Back</button>
+            </div>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 // Dashboard Tab
 function DashboardTab() {
   const { dashboard } = useApp();
@@ -35,11 +144,52 @@ function DashboardTab() {
 
   return (
     <div className="p-5 pb-10">
+      <div className="flex justify-between items-center mb-3">
+        <span className="font-semibold text-sm text-muted-foreground">Financial Summary</span>
+        <DateFilterSelector />
+      </div>
+
       <div className="bg-card rounded-2xl p-5 shadow-sm">
         <DashRow label="Opening Balance (BF)" value={formatCurrency(dashboard.openingBalance)} color="text-foreground" />
         <div className="h-px bg-border my-0.5" />
+
+        {/* New vs Renewed Loans */}
         <DashRow label="Total Given" value={`- ${formatCurrency(dashboard.totalGiven)}`} color="text-destructive" />
+        {(dashboard.totalGivenNew > 0 || dashboard.totalGivenRenewed > 0) && (
+          <div className="pl-4 space-y-0.5">
+            {dashboard.totalGivenNew > 0 && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs text-muted-foreground">↳ New Loans</span>
+                <span className="font-semibold text-xs text-foreground">{formatCurrency(dashboard.totalGivenNew)}</span>
+              </div>
+            )}
+            {dashboard.totalGivenRenewed > 0 && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs text-muted-foreground">↳ Renewed Loans</span>
+                <span className="font-semibold text-xs text-foreground">{formatCurrency(dashboard.totalGivenRenewed)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         <DashRow label="VK (Margin)" value={formatCurrency(dashboard.vk)} color="text-warning" />
+        {(dashboard.vkNew > 0 || dashboard.vkRenewed > 0) && (
+          <div className="pl-4 space-y-0.5">
+            {dashboard.vkNew > 0 && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs text-muted-foreground">↳ New Loans VK</span>
+                <span className="font-semibold text-xs text-warning">{formatCurrency(dashboard.vkNew)}</span>
+              </div>
+            )}
+            {dashboard.vkRenewed > 0 && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs text-muted-foreground">↳ Renewed Loans VK</span>
+                <span className="font-semibold text-xs text-warning">{formatCurrency(dashboard.vkRenewed)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="h-px bg-border my-0.5" />
         <div className="flex justify-between items-center py-2.5">
           <div className="flex-1">
@@ -99,38 +249,53 @@ function DashRow({ label, value, color }: { label: string; value: string; color:
   );
 }
 
-// Customers Tab
+// Customers Tab with village selector
 function CustomersTab({ areaId }: { areaId: string }) {
   const { villages, customerSummaries } = useApp();
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
+  const [selectedVillageId, setSelectedVillageId] = useState<string | null>(null);
 
   const filteredBySearch = useMemo(() => {
-    if (!search.trim()) return customerSummaries;
+    let list = customerSummaries;
+    if (selectedVillageId) {
+      list = list.filter(cs => cs.customer.villageId === selectedVillageId);
+    }
+    if (!search.trim()) return list;
     const q = search.trim().toLowerCase();
     const num = parseInt(q);
-    return customerSummaries.filter(cs => {
+    return list.filter(cs => {
       if (!isNaN(num) && cs.customer.serialNumber === num) return true;
       return cs.customer.name.toLowerCase().includes(q) || cs.customer.phone.includes(q) || cs.customer.villageName.toLowerCase().includes(q);
     });
-  }, [customerSummaries, search]);
+  }, [customerSummaries, search, selectedVillageId]);
 
-  const villageGroups = useMemo(() => {
-    const groups: { village: Village; customers: CustomerLoanSummary[] }[] = [];
-    for (const v of villages) {
-      const custs = filteredBySearch.filter(cs => cs.customer.villageId === v.id);
-      groups.push({ village: v, customers: custs });
-    }
-    const ungrouped = filteredBySearch.filter(cs => !villages.some(v => v.id === cs.customer.villageId));
-    if (ungrouped.length > 0) {
-      groups.push({ village: { id: '_other', areaId, name: 'Other', nextSerialNumber: 0, createdAt: '' }, customers: ungrouped });
-    }
-    return groups.filter(g => g.customers.length > 0 || !search.trim());
-  }, [villages, filteredBySearch, search, areaId]);
+  const today = new Date().toDateString();
 
   return (
     <div className="flex-1 flex flex-col relative">
-      <div className="flex items-center gap-2 bg-card mx-5 mt-3 mb-2 rounded-xl px-3.5 h-11 shadow-sm">
+      {/* Village selector chips */}
+      {villages.length > 1 && (
+        <div className="flex gap-2 px-5 pt-3 pb-1 overflow-x-auto flex-shrink-0">
+          <button
+            onClick={() => setSelectedVillageId(null)}
+            className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium border whitespace-nowrap transition-colors ${!selectedVillageId ? 'bg-primary text-primary-foreground border-primary' : 'bg-card text-muted-foreground border-border'}`}
+          >
+            All Villages
+          </button>
+          {villages.map(v => (
+            <button
+              key={v.id}
+              onClick={() => setSelectedVillageId(v.id)}
+              className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium border whitespace-nowrap transition-colors ${selectedVillageId === v.id ? 'bg-primary text-primary-foreground border-primary' : 'bg-card text-muted-foreground border-border'}`}
+            >
+              {v.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 bg-card mx-5 mt-2 mb-2 rounded-xl px-3.5 h-11 shadow-sm">
         <Search size={16} className="text-muted-foreground" />
         <input
           className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none h-full"
@@ -144,60 +309,58 @@ function CustomersTab({ areaId }: { areaId: string }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 pt-1 pb-20">
-        {villageGroups.length === 0 && villages.length === 0 && !search.trim() ? (
+        {filteredBySearch.length === 0 && villages.length === 0 && !search.trim() ? (
           <div className="flex flex-col items-center pt-16 gap-2.5">
             <Home size={40} className="text-muted-foreground" />
             <p className="font-semibold text-base text-foreground">No villages yet</p>
             <p className="text-[13px] text-muted-foreground text-center">Add a village to start adding customers</p>
           </div>
-        ) : filteredBySearch.length === 0 && search.trim() ? (
+        ) : filteredBySearch.length === 0 ? (
           <div className="flex flex-col items-center pt-16 gap-2.5">
             <Search size={36} className="text-muted-foreground" />
             <p className="font-semibold text-base text-foreground">No results</p>
           </div>
         ) : (
-          villageGroups.map(group => (
-            <div key={group.village.id} className="mb-4">
-              <div className="flex items-center justify-between py-2">
-                <div className="flex items-center gap-1.5">
-                  <MapPin size={16} className="text-primary" />
-                  <span className="font-semibold text-sm text-foreground">{group.village.name}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-[13px] text-muted-foreground">{group.customers.length}</span>
-                  <button onClick={() => navigate(`/customer/create?villageId=${group.village.id}`)} className="p-0.5 hover:opacity-60">
-                    <PlusCircle size={22} className="text-primary" />
-                  </button>
-                </div>
-              </div>
-              {group.customers.map(summary => (
-                <CustomerRow key={summary.customer.id} summary={summary} />
-              ))}
-            </div>
+          filteredBySearch.map(summary => (
+            <CustomerRow key={summary.customer.id} summary={summary} />
           ))
         )}
       </div>
 
-      <button
-        onClick={() => navigate('/village/create')}
-        className="fixed bottom-5 right-5 flex items-center gap-1.5 bg-primary text-primary-foreground px-5 py-3 rounded-3xl font-semibold text-sm shadow-lg hover:opacity-90 active:scale-95 transition-all z-10"
-      >
-        <Plus size={16} />
-        Village
-      </button>
+      <div className="fixed bottom-5 right-5 flex gap-2 z-10">
+        <button
+          onClick={() => navigate('/village/create')}
+          className="flex items-center gap-1.5 bg-card text-foreground border border-border px-4 py-3 rounded-3xl font-semibold text-sm shadow-lg hover:opacity-90 active:scale-95 transition-all"
+        >
+          <Plus size={16} />
+          Village
+        </button>
+        {villages.length > 0 && (
+          <button
+            onClick={() => navigate(`/customer/create${selectedVillageId ? `?villageId=${selectedVillageId}` : ''}`)}
+            className="flex items-center gap-1.5 bg-primary text-primary-foreground px-5 py-3 rounded-3xl font-semibold text-sm shadow-lg hover:opacity-90 active:scale-95 transition-all"
+          >
+            <Plus size={16} />
+            Customer
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
 function CustomerRow({ summary }: { summary: CustomerLoanSummary }) {
   const navigate = useNavigate();
-  const { customer, hasLoan, isFullyPaid, remainingAmount, loanAmount, installmentsPaid, totalInstallments, loanType } = summary;
+  const { customer, hasLoan, isFullyPaid, remainingAmount, loanAmount, installmentsPaid, totalInstallments, loanType, paidToday } = summary;
   const loanTypeLabel = hasLoan && loanType ? (loanType === 'RENEWED' ? 'Renewed' : 'New') : '';
 
   return (
     <button
       onClick={() => navigate(`/customer/${customer.id}`)}
-      className="w-full flex items-center gap-2.5 bg-card rounded-xl p-3 mb-1.5 shadow-sm hover:opacity-80 transition-opacity text-left"
+      className={cn(
+        "w-full flex items-center gap-2.5 rounded-xl p-3 mb-1.5 shadow-sm hover:opacity-80 transition-opacity text-left",
+        paidToday ? "bg-success-light border border-success/20" : "bg-card"
+      )}
     >
       <div className={`w-[34px] h-[34px] rounded-lg flex items-center justify-center flex-shrink-0 ${isFullyPaid ? 'bg-success-light' : 'bg-primary-light'}`}>
         <span className={`font-bold text-xs ${isFullyPaid ? 'text-success' : 'text-primary'}`}>#{customer.serialNumber}</span>
@@ -205,7 +368,15 @@ function CustomerRow({ summary }: { summary: CustomerLoanSummary }) {
       <div className="flex-1 min-w-0">
         <div className="flex justify-between items-start">
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-sm text-foreground truncate">{customer.name}</p>
+            <div className="flex items-center gap-1.5">
+              <p className="font-semibold text-sm text-foreground truncate">{customer.name}</p>
+              {paidToday && (
+                <span className="flex items-center gap-0.5 bg-success/10 text-success text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0">
+                  <CheckCircle size={10} />
+                  Paid today
+                </span>
+              )}
+            </div>
             {hasLoan && <p className="text-xs text-muted-foreground mt-0.5">{loanTypeLabel} {formatCurrency(loanAmount)}</p>}
           </div>
           {hasLoan && !isFullyPaid ? (
@@ -225,7 +396,7 @@ function CustomerRow({ summary }: { summary: CustomerLoanSummary }) {
   );
 }
 
-// History Tab
+// History Tab with Adjustment filter + payment mode sub-filters
 const EVENT_FILTERS = [
   { key: 'ALL', label: 'All' },
   { key: 'NEW_LOAN', label: 'New Loan', color: '#2563EB' },
@@ -233,31 +404,77 @@ const EVENT_FILTERS = [
   { key: 'INSTALLMENT_PAYMENT', label: 'Payment', color: '#16A34A' },
   { key: 'EXPENSE', label: 'Expense', color: '#DC2626' },
   { key: 'CAPITAL_ADDED', label: 'Capital', color: '#0EA5E9' },
+  { key: 'ADJUSTMENT_EVENT', label: 'Adjustment', color: '#D97706' },
+];
+
+const PAYMENT_SUB_FILTERS: { key: PaymentMode | 'all'; label: string; color?: string }[] = [
+  { key: 'all', label: 'All Payments' },
+  { key: 'cash', label: '💵 Cash', color: '#EAB308' },
+  { key: 'online', label: '🌐 Online', color: '#3B82F6' },
+  { key: 'mixed', label: '💜 Mixed', color: '#8B5CF6' },
 ];
 
 function HistoryTab() {
-  const { events } = useApp();
+  const { events, dateFilter } = useApp();
   const [filter, setFilter] = useState('ALL');
+  const [paymentModeFilter, setPaymentModeFilter] = useState<PaymentMode | 'all'>('all');
 
   const filtered = useMemo(() => {
-    if (filter === 'ALL') return events;
-    return events.filter(e => e.eventType === filter);
-  }, [events, filter]);
+    // Exclude onboarding payments from history
+    let list = events.filter(e => !isOnboardingPayment(e));
+
+    // Apply date filter
+    if (dateFilter.mode !== 'all') {
+      list = filterEventsByDate(list, dateFilter);
+    }
+
+    // Apply event type filter
+    if (filter !== 'ALL') {
+      list = list.filter(e => e.eventType === filter);
+    }
+
+    // Apply payment mode sub-filter
+    if (filter === 'INSTALLMENT_PAYMENT' && paymentModeFilter !== 'all') {
+      list = list.filter(e => getPaymentMode(e) === paymentModeFilter);
+    }
+
+    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [events, filter, paymentModeFilter, dateFilter]);
 
   return (
     <div className="flex-1 flex flex-col">
-      <div className="flex gap-2 px-5 py-3 overflow-x-auto flex-shrink-0">
+      <div className="flex justify-between items-center px-5 pt-3 pb-1">
+        <span className="font-semibold text-sm text-muted-foreground">History</span>
+        <DateFilterSelector />
+      </div>
+
+      <div className="flex gap-2 px-5 py-2 overflow-x-auto flex-shrink-0">
         {EVENT_FILTERS.map(f => (
           <button
             key={f.key}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-medium border whitespace-nowrap transition-colors ${filter === f.key ? 'bg-primary text-primary-foreground border-primary' : 'bg-card text-muted-foreground border-border'}`}
-            onClick={() => setFilter(f.key)}
+            onClick={() => { setFilter(f.key); setPaymentModeFilter('all'); }}
           >
             {f.color && <span className="w-2 h-2 rounded-full" style={{ backgroundColor: f.color }} />}
             {f.label}
           </button>
         ))}
       </div>
+
+      {/* Payment mode sub-filters */}
+      {filter === 'INSTALLMENT_PAYMENT' && (
+        <div className="flex gap-2 px-5 pb-2 overflow-x-auto flex-shrink-0">
+          {PAYMENT_SUB_FILTERS.map(f => (
+            <button
+              key={f.key}
+              className={`px-3 py-1 rounded-full text-[12px] font-medium border whitespace-nowrap transition-colors ${paymentModeFilter === f.key ? 'bg-foreground text-background border-foreground' : 'bg-card text-muted-foreground border-border'}`}
+              onClick={() => setPaymentModeFilter(f.key)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-5 pb-10">
         {filtered.length === 0 ? (
@@ -277,24 +494,35 @@ function HistoryTab() {
 function HistoryEventItem({ event }: { event: FinanceEvent }) {
   const color = getEventColor(event.eventType);
 
-  const getDetails = (): { name: string; info: string } => {
+  const getDetails = (): { name: string; info: string; paymentBreakdown?: string } => {
     switch (event.eventType) {
       case 'ONBOARDING_BALANCE': return { name: '', info: formatCurrency((event.payload as OnboardingBalancePayload).amount) };
       case 'NEW_LOAN': { const p = event.payload as NewLoanPayload; return { name: p.customerName, info: `Given: ${formatCurrency(p.loanAmount)} | Payable: ${formatCurrency(p.totalPayable)}` }; }
       case 'RENEW_LOAN': { const p = event.payload as RenewLoanPayload; return { name: p.customerName, info: `Given: ${formatCurrency(p.loanAmount)} | Payable: ${formatCurrency(p.totalPayable)}` }; }
-      case 'INSTALLMENT_PAYMENT': { const p = event.payload as InstallmentPaymentPayload; return { name: p.customerName, info: formatCurrency(p.totalAmount) }; }
+      case 'INSTALLMENT_PAYMENT': {
+        const p = event.payload as InstallmentPaymentPayload;
+        const parts: string[] = [];
+        if (p.offlineAmount > 0) parts.push(`💵 ${formatCurrency(p.offlineAmount)}`);
+        if (p.onlineAmount > 0) parts.push(`🌐 ${formatCurrency(p.onlineAmount)}`);
+        return { name: p.customerName, info: parts.join(' + '), paymentBreakdown: parts.join(' + ') };
+      }
       case 'EXPENSE': { const p = event.payload as ExpensePayload; return { name: p.description, info: formatCurrency(p.amount) }; }
       case 'CAPITAL_ADDED': { const p = event.payload as CapitalAddedPayload; return { name: p.description, info: formatCurrency(p.amount) }; }
-      case 'ADJUSTMENT_EVENT': { const p = event.payload as AdjustmentPayload; return { name: p.reason, info: formatCurrency(Math.abs(p.amount)) }; }
+      case 'ADJUSTMENT_EVENT': { const p = event.payload as AdjustmentPayload; return { name: p.reason, info: `${p.amount >= 0 ? '+' : ''}${formatCurrency(p.amount)}` }; }
       default: return { name: '', info: '' };
     }
   };
 
   const details = getDetails();
+  const mode = event.eventType === 'INSTALLMENT_PAYMENT' ? getPaymentMode(event) : null;
+  const modeColor = mode ? getPaymentModeColor(mode) : null;
 
   return (
     <div className="flex items-start gap-3 bg-card rounded-xl p-3.5 mb-2 shadow-sm">
-      <span className="w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0" style={{ backgroundColor: color }} />
+      <span
+        className="w-2.5 h-2.5 rounded-full mt-1 flex-shrink-0"
+        style={{ backgroundColor: mode ? modeColor! : color }}
+      />
       <div className="flex-1 min-w-0">
         <div className="flex justify-between items-center">
           <span className="font-bold text-xs uppercase" style={{ color }}>{getEventLabel(event.eventType)}</span>
